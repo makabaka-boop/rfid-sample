@@ -2,6 +2,12 @@
   <div class="page-container">
     <div class="page-header">
       <div class="page-title">库位占用看板</div>
+      <div style="display:flex;gap:8px;">
+        <el-button :icon="Filter" :type="filters.onlyFree ? 'primary' : 'default'" @click="toggleOnlyFree">
+          {{ filters.onlyFree ? '显示全部' : '只看空闲库位' }}
+        </el-button>
+        <el-button :icon="Download" @click="handleExport">导出明细</el-button>
+      </div>
     </div>
 
     <div class="filter-card">
@@ -12,7 +18,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="区域">
-          <el-select v-model="filters.areaId" placeholder="全部区域" clearable style="width:180px;" @change="loadData">
+          <el-select v-model="filters.areaId" placeholder="全部区域" clearable style="width:180px;" @change="onAreaChange">
             <el-option v-for="a in areas" :key="a.id" :label="a.area_name" :value="a.id" />
           </el-select>
         </el-form-item>
@@ -37,7 +43,7 @@
     </div>
 
     <el-row :gutter="16" class="mb-16">
-      <el-col :span="4">
+      <el-col :span="3">
         <div class="stat-card flex-between">
           <div>
             <div class="stat-label">总库位数</div>
@@ -46,20 +52,19 @@
           <el-icon class="stat-icon" style="color:#909399;"><Grid /></el-icon>
         </div>
       </el-col>
-      <el-col :span="4">
-        <div class="stat-card flex-between" style="cursor:pointer;" @click="filters.tagStatus='已挂装';loadData()">
+      <el-col :span="3">
+        <div class="stat-card flex-between" style="cursor:pointer;" @click="setFilter('tagStatus','已挂装')">
           <div>
             <div class="stat-label">已占用</div>
             <div class="stat-value" style="color:#67c23a;">
-              {{ boardData.summary?.hasFilter ? boardData.summary?.totalMatchedOccupied : boardData.summary?.totalOccupied || 0 }}
-              <span v-if="boardData.summary?.hasFilter" style="font-size:13px;color:#909399;font-weight:400;">/{{ boardData.summary?.totalOccupied || 0 }}</span>
+              {{ displayOccupied }}
             </div>
           </div>
           <el-icon class="stat-icon" style="color:#67c23a;"><ShoppingCartFull /></el-icon>
         </div>
       </el-col>
-      <el-col :span="4">
-        <div class="stat-card flex-between">
+      <el-col :span="3">
+        <div class="stat-card flex-between" style="cursor:pointer;" @click="toggleOnlyFreeDirect">
           <div>
             <div class="stat-label">空闲</div>
             <div class="stat-value" style="color:#409eff;">{{ boardData.summary?.totalFree || 0 }}</div>
@@ -67,8 +72,8 @@
           <el-icon class="stat-icon" style="color:#409eff;"><Plus /></el-icon>
         </div>
       </el-col>
-      <el-col :span="4">
-        <div class="stat-card flex-between" style="cursor:pointer;border-left:4px solid #f56c6c;" @click="filters.tagStatus='异常观察';loadData()">
+      <el-col :span="3">
+        <div class="stat-card flex-between" style="cursor:pointer;border-left:4px solid #f56c6c;" @click="setFilter('tagStatus','异常观察')">
           <div>
             <div class="stat-label">异常库位</div>
             <div class="stat-value" style="color:#f56c6c;">{{ boardData.summary?.totalAbnormal || 0 }}</div>
@@ -76,17 +81,17 @@
           <el-icon class="stat-icon" style="color:#f56c6c;"><Warning /></el-icon>
         </div>
       </el-col>
-      <el-col :span="4">
-        <div class="stat-card flex-between" style="cursor:pointer;" @click="filters.tagStatus='待回收确认';loadData()">
+      <el-col :span="3">
+        <div class="stat-card flex-between" style="cursor:pointer;" @click="setFilter('tagStatus','待回收确认')">
           <div>
-            <div class="stat-label">待回收确认</div>
+            <div class="stat-label">待回收</div>
             <div class="stat-value" style="color:#e6a23c;">{{ boardData.summary?.totalPendingRecovery || 0 }}</div>
           </div>
           <el-icon class="stat-icon" style="color:#e6a23c;"><RefreshLeft /></el-icon>
         </div>
       </el-col>
-      <el-col :span="4">
-        <div class="stat-card flex-between" style="cursor:pointer;" @click="filters.tagStatus='待调换';loadData()">
+      <el-col :span="3">
+        <div class="stat-card flex-between" style="cursor:pointer;" @click="setFilter('tagStatus','待调换')">
           <div>
             <div class="stat-label">待调换</div>
             <div class="stat-value" style="color:#409eff;">{{ boardData.summary?.totalPendingSwap || 0 }}</div>
@@ -94,10 +99,44 @@
           <el-icon class="stat-icon" style="color:#409eff;"><Switch /></el-icon>
         </div>
       </el-col>
+      <el-col :span="3">
+        <div class="stat-card flex-between" style="cursor:pointer;border-left:4px solid #e6a23c;" @click="$router.push('/hanging-records?expiryStatus=expiring')">
+          <div>
+            <div class="stat-label">即将到期</div>
+            <div class="stat-value" style="color:#e6a23c;">{{ boardData.summary?.totalExpiringSoon || 0 }}</div>
+          </div>
+          <el-icon class="stat-icon" style="color:#e6a23c;"><Clock /></el-icon>
+        </div>
+      </el-col>
+      <el-col :span="3">
+        <div
+          class="stat-card flex-between"
+          style="cursor:pointer;"
+          :style="boardData.summary?.totalHighOccupancyAreas > 0 ? 'border-left:4px solid #f56c6c;' : ''"
+          @click="highlightHighOccupancy = !highlightHighOccupancy"
+        >
+          <div>
+            <div class="stat-label">高占用区域</div>
+            <div class="stat-value" :style="{ color: (boardData.summary?.totalHighOccupancyAreas||0) > 0 ? '#f56c6c' : '#67c23a' }">{{ boardData.summary?.totalHighOccupancyAreas || 0 }}</div>
+          </div>
+          <el-icon class="stat-icon" :style="{ color: (boardData.summary?.totalHighOccupancyAreas||0) > 0 ? '#f56c6c' : '#67c23a' }"><AlarmClock /></el-icon>
+        </div>
+      </el-col>
     </el-row>
 
+    <el-alert
+      v-if="boardData.summary?.totalHighOccupancyAreas > 0 && highlightHighOccupancy"
+      type="warning"
+      :closable="false"
+      style="margin-bottom:16px;"
+    >
+      <template #title>
+        检测到 {{ boardData.summary.totalHighOccupancyAreas }} 个高占用区域（占用率≥{{ boardData.summary.highOccupancyThreshold }}%），建议及时调整陈列避免拥挤
+      </template>
+    </el-alert>
+
     <el-row :gutter="16" class="mb-16">
-      <el-col :span="18">
+      <el-col :span="12">
         <div class="stat-card">
           <div class="detail-section-title">楼层区域分布</div>
           <div v-for="floor in boardData.floorSummary || []" :key="floor.floor" class="floor-section">
@@ -113,11 +152,17 @@
                 v-for="area in getAreasByFloor(floor.floor)"
                 :key="area.id"
                 class="area-block"
-                :class="{ 'area-block-highlight': filters.areaId === area.id }"
+                :class="{
+                  'area-block-highlight': filters.areaId === area.id,
+                  'area-block-high-occupancy': area.isHighOccupancy && highlightHighOccupancy
+                }"
                 @click="selectArea(area)"
               >
-                <div class="area-name">{{ area.areaName }}</div>
-                <div class="area-capacity">容量: {{ area.capacity }}</div>
+                <div class="area-name-row">
+                  <span class="area-name">{{ area.areaName }}</span>
+                  <el-tag v-if="area.isHighOccupancy" type="danger" size="small" effect="dark">高占用</el-tag>
+                </div>
+                <div class="area-capacity">容量: {{ area.capacity }} · 空闲: {{ area.freeCount }}</div>
                 <div class="area-progress">
                   <el-progress
                     :percentage="area.occupancyRate"
@@ -127,11 +172,11 @@
                   />
                 </div>
                 <div class="area-stats-row">
-                  <span class="area-rate">{{ area.occupancyRate }}%</span>
+                  <span class="area-rate" :style="{ color: getOccupancyColor(area.occupancyRate) }">{{ area.occupancyRate }}%</span>
                   <span class="area-count">
                     <span style="color:#67c23a;">{{ area.occupiedCount }}占</span>
-                    <span style="color:#409eff;">{{ area.freeCount }}空</span>
                     <span v-if="area.abnormalCount > 0" style="color:#f56c6c;">{{ area.abnormalCount }}异常</span>
+                    <span v-if="area.expiringSoonCount > 0" style="color:#e6a23c;">{{ area.expiringSoonCount }}临期</span>
                   </span>
                 </div>
               </div>
@@ -147,11 +192,15 @@
               v-for="(item, idx) in boardData.occupancyRanking || []"
               :key="item.id"
               class="ranking-item"
+              :class="{ 'ranking-high': item.isHighOccupancy }"
               @click="jumpToArea(item)"
             >
               <span class="ranking-num" :class="idx < 3 ? `ranking-top-${idx+1}` : ''">{{ idx + 1 }}</span>
               <div class="ranking-info">
-                <div class="ranking-name">{{ item.areaName }}</div>
+                <div class="ranking-name">
+                  {{ item.areaName }}
+                  <el-tag v-if="item.isHighOccupancy" type="danger" size="small" effect="plain" style="margin-left:4px;">高</el-tag>
+                </div>
                 <div class="ranking-detail">{{ item.floor }}楼 · {{ item.occupiedCount }}/{{ item.capacity }}位
                   <span v-if="item.abnormalCount > 0" style="color:#f56c6c;">· {{ item.abnormalCount }}异常</span>
                 </div>
@@ -161,13 +210,44 @@
           </div>
         </div>
       </el-col>
+      <el-col :span="6">
+        <div class="stat-card">
+          <div class="detail-section-title" style="border-left-color:#67c23a;">负责人统计</div>
+          <div class="resp-list">
+            <div
+              v-for="(r, idx) in (boardData.responsibleStats || []).slice(0, 10)"
+              :key="r.responsibleId"
+              class="resp-item"
+              :class="{ 'resp-item-active': filters.responsibleId === r.responsibleId }"
+              @click="setFilter('responsibleId', filters.responsibleId === r.responsibleId ? '' : r.responsibleId)"
+            >
+              <span class="resp-name">{{ r.responsibleName || '未分配' }}</span>
+              <span class="resp-counts">
+                <span class="resp-badge resp-badge-green">{{ r.totalLocations }}</span>
+                <span v-if="r.abnormalCount > 0" class="resp-badge resp-badge-red">{{ r.abnormalCount }}异</span>
+                <span v-if="r.expiringCount > 0" class="resp-badge resp-badge-orange">{{ r.expiringCount }}临</span>
+                <span v-if="r.overdueCount > 0" class="resp-badge resp-badge-red">{{ r.overdueCount }}超</span>
+              </span>
+            </div>
+            <el-empty v-if="!(boardData.responsibleStats || []).length" description="暂无数据" :image-size="60" />
+          </div>
+        </div>
+      </el-col>
     </el-row>
 
-    <div v-for="area in boardData.areas || []" :key="area.id" class="stat-card mb-16">
+    <div
+      v-for="area in boardData.areas || []"
+      :key="area.id"
+      class="stat-card mb-16"
+      :class="{ 'area-card-high-occupancy': area.isHighOccupancy && highlightHighOccupancy }"
+    >
       <div class="area-section-header">
         <div>
-          <span class="area-section-title">{{ area.areaName }}</span>
-          <span class="area-section-meta">{{ area.floor }}楼 · {{ area.zone || '' }}</span>
+          <span class="area-section-title">
+            {{ area.areaName }}
+            <el-tag v-if="area.isHighOccupancy" type="danger" size="small" effect="dark" style="margin-left:6px;">高占用{{ area.occupancyRate }}%</el-tag>
+          </span>
+          <span class="area-section-meta">{{ area.floor }}楼 · {{ area.zone || '' }} · 容量{{ area.capacity }}</span>
         </div>
         <div class="area-section-stats">
           <el-tag type="success" size="small">已占用 {{ area.occupiedCount }}</el-tag>
@@ -175,6 +255,11 @@
           <el-tag v-if="area.abnormalCount > 0" type="danger" size="small">异常 {{ area.abnormalCount }}</el-tag>
           <el-tag v-if="area.pendingRecoveryCount > 0" type="warning" size="small">待回收 {{ area.pendingRecoveryCount }}</el-tag>
           <el-tag v-if="area.pendingSwapCount > 0" type="primary" size="small">待调换 {{ area.pendingSwapCount }}</el-tag>
+          <el-tag v-if="area.expiringSoonCount > 0" type="warning" size="small" effect="plain">临期 {{ area.expiringSoonCount }}</el-tag>
+          <el-tag v-if="area.overdueCount > 0" type="danger" size="small" effect="plain">超期 {{ area.overdueCount }}</el-tag>
+          <el-button size="small" type="primary" link @click="openHangDialog(area)">
+            <el-icon style="margin-right:2px;"><Plus /></el-icon>挂装到空闲位
+          </el-button>
         </div>
       </div>
 
@@ -184,6 +269,7 @@
           <div
             v-for="pos in layer.positions"
             :key="pos.positionNo"
+            v-show="!filters.onlyFree || pos.status === 'free'"
             class="position-card"
             :class="getPositionCardClass(pos)"
             @click="handlePositionClick(area, layer.layerNo, pos)"
@@ -207,15 +293,20 @@
                 <el-tag
                   :type="pos.expiryStatus === 'overdue' ? 'danger' : pos.expiryStatus === 'expiring' ? 'warning' : 'success'"
                   size="small"
+                  effect="dark"
                 >
+                  <el-icon v-if="pos.expiryStatus === 'overdue'" style="margin-right:2px;"><WarningFilled /></el-icon>
                   {{ pos.expectedOffDate }}
                   <span v-if="pos.expiryStatus === 'overdue'">(超期{{ Math.abs(pos.daysLeft) }}天)</span>
                   <span v-else-if="pos.expiryStatus === 'expiring'">({{ pos.daysLeft }}天后)</span>
                 </el-tag>
               </div>
               <div v-if="pos.hasAnomaly" class="pos-badges">
-                <el-tag v-if="pos.hasActiveTicket" type="danger" size="small" effect="plain">异常单</el-tag>
+                <el-tag v-if="pos.hasActiveTicket" type="danger" size="small" effect="plain" style="cursor:pointer;" @click.stop="goAnomalyList(pos)">异常单</el-tag>
                 <el-tag v-if="pos.hasMissingPart" type="warning" size="small" effect="plain">缺件</el-tag>
+              </div>
+              <div v-if="pos.lastStatusUpdate" class="pos-update-time" :title="'最近状态更新: ' + pos.lastStatusUpdate">
+                <el-icon><Clock /></el-icon> {{ formatDateTime(pos.lastStatusUpdate) }}
               </div>
             </template>
             <template v-else>
@@ -228,28 +319,57 @@
         </div>
       </div>
     </div>
+
+    <el-dialog v-model="hangDialogVisible" title="选择空闲库位挂装" width="560px">
+      <div v-if="selectedArea" style="margin-bottom:12px;">
+        <b>{{ selectedArea.areaName }}</b>（{{ selectedArea.floor }}楼） · 容量 {{ selectedArea.capacity }} · 空闲 {{ freePositions.length }} 位
+      </div>
+      <el-empty v-if="!freePositions.length" description="该区域暂无空闲库位" :image-size="80" />
+      <div v-else class="free-pos-grid">
+        <div
+          v-for="fp in freePositions"
+          :key="`${fp.layerNo}_${fp.positionNo}`"
+          class="free-pos-item"
+          @click="selectFreePosition(fp)"
+        >
+          {{ fp.label }}
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="hangDialogVisible = false">取消</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Search, Refresh, Grid, ShoppingCartFull, Plus, Warning, RefreshLeft, Switch } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { Search, Refresh, Grid, ShoppingCartFull, Plus, Warning, RefreshLeft, Switch, Clock, AlarmClock, Filter, Download, WarningFilled } from '@element-plus/icons-vue'
 import { TAG_STATUS_OPTIONS, getStatusTagType } from '@/utils/constants'
-import { getLocationBoardApi, getAreasApi, getResponsiblePersonsApi } from '@/api'
+import { getLocationBoardApi, getAreasApi, getResponsiblePersonsApi, getFreePositionsApi, exportLocationBoardApi } from '@/api'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const areas = ref([])
 const responsiblePersons = ref([])
-const boardData = reactive({ summary: {}, floorSummary: [], areas: [], occupancyRanking: [] })
+const boardData = reactive({ summary: {}, floorSummary: [], areas: [], occupancyRanking: [], responsibleStats: [] })
+const highlightHighOccupancy = ref(true)
 
 const floorOptions = [1, 2, 3, 4, 5]
 const statusOptions = TAG_STATUS_OPTIONS.filter(s => ['已挂装', '待调换', '待回收确认', '异常观察'].includes(s.value))
 
 const filters = reactive({
-  floor: '', areaId: '', tagStatus: '', responsibleId: '', keyword: ''
+  floor: '', areaId: '', tagStatus: '', responsibleId: '', keyword: '', onlyFree: false
+})
+
+const displayOccupied = computed(() => {
+  if (boardData.summary?.hasFilter || filters.onlyFree) {
+    return boardData.summary?.totalMatchedOccupied || 0
+  }
+  return boardData.summary?.totalOccupied || 0
 })
 
 function getAreasByFloor(floor) {
@@ -257,7 +377,7 @@ function getAreasByFloor(floor) {
 }
 
 function getOccupancyColor(rate) {
-  if (rate >= 90) return '#f56c6c'
+  if (rate >= 85) return '#f56c6c'
   if (rate >= 70) return '#e6a23c'
   return '#67c23a'
 }
@@ -270,6 +390,8 @@ function getPositionCardClass(pos) {
   if (pos.hangStatus === '待回收确认') { classes.push('pos-recovery'); return classes.join(' ') }
   if (pos.hangStatus === '待调换') { classes.push('pos-swap'); return classes.join(' ') }
   if (pos.hangStatus === '异常观察') { classes.push('pos-abnormal'); return classes.join(' ') }
+  if (pos.expiryStatus === 'overdue') classes.push('pos-overdue')
+  else if (pos.expiryStatus === 'expiring') classes.push('pos-expiring')
   classes.push('pos-occupied')
   return classes.join(' ')
 }
@@ -279,8 +401,37 @@ function formatDate(dt) {
   return dt.substring(0, 10)
 }
 
+function formatDateTime(dt) {
+  if (!dt) return '-'
+  return dt.substring(5, 16)
+}
+
+function setFilter(key, value) {
+  filters[key] = value
+  filters.onlyFree = false
+  loadData()
+}
+
+function toggleOnlyFree() {
+  filters.onlyFree = !filters.onlyFree
+  if (filters.onlyFree) {
+    filters.tagStatus = ''
+    filters.responsibleId = ''
+    filters.keyword = ''
+  }
+  loadData()
+}
+
+function toggleOnlyFreeDirect() {
+  toggleOnlyFree()
+}
+
 function selectArea(area) {
-  filters.areaId = area.id
+  filters.areaId = filters.areaId === area.id ? '' : area.id
+  loadData()
+}
+
+function onAreaChange() {
   loadData()
 }
 
@@ -298,6 +449,30 @@ function handlePositionClick(area, layerNo, pos) {
   }
 }
 
+function goAnomalyList(pos) {
+  router.push({ path: '/anomaly-tickets', query: { hangId: pos.hangId } })
+}
+
+const hangDialogVisible = ref(false)
+const selectedArea = ref(null)
+const freePositions = ref([])
+
+async function openHangDialog(area) {
+  selectedArea.value = area
+  try {
+    const res = await getFreePositionsApi({ areaId: area.id })
+    freePositions.value = res.data.freePositions || []
+  } catch (e) {
+    freePositions.value = area.freePositions || []
+  }
+  hangDialogVisible.value = true
+}
+
+function selectFreePosition(fp) {
+  hangDialogVisible.value = false
+  router.push({ path: '/hanging-records', query: { areaId: selectedArea.value.id, layerNo: fp.layerNo, positionNo: fp.positionNo } })
+}
+
 async function loadMaster() {
   const [a, r] = await Promise.all([getAreasApi(), getResponsiblePersonsApi()])
   areas.value = a.data
@@ -313,6 +488,7 @@ async function loadData() {
     if (filters.tagStatus) params.tagStatus = filters.tagStatus
     if (filters.responsibleId) params.responsibleId = filters.responsibleId
     if (filters.keyword) params.keyword = filters.keyword
+    if (filters.onlyFree) params.onlyFree = 'true'
     const res = await getLocationBoardApi(params)
     Object.assign(boardData, res.data)
   } finally {
@@ -320,8 +496,34 @@ async function loadData() {
   }
 }
 
+async function handleExport() {
+  if (filters.onlyFree) {
+    ElMessage.info('"只看空闲库位"模式下无数据可导出，请先关闭该模式后再导出占用库位明细')
+    return
+  }
+  try {
+    const params = {}
+    if (filters.floor) params.floor = filters.floor
+    if (filters.areaId) params.areaId = filters.areaId
+    if (filters.tagStatus) params.tagStatus = filters.tagStatus
+    if (filters.responsibleId) params.responsibleId = filters.responsibleId
+    if (filters.keyword) params.keyword = filters.keyword
+    const res = await exportLocationBoardApi(params)
+    const blob = new Blob([res], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `库位明细_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (e) {
+    ElMessage.error('导出失败')
+  }
+}
+
 function resetFilters() {
-  Object.assign(filters, { floor: '', areaId: '', tagStatus: '', responsibleId: '', keyword: '' })
+  Object.assign(filters, { floor: '', areaId: '', tagStatus: '', responsibleId: '', keyword: '', onlyFree: false })
   loadData()
 }
 
@@ -354,9 +556,8 @@ onMounted(async () => {
 .floor-title {
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
-  background: #409eff;
   color: #fff;
+  background: #409eff;
   padding: 2px 12px;
   border-radius: 4px;
 }
@@ -385,11 +586,24 @@ onMounted(async () => {
   border-color: #409eff;
   background: #ecf5ff;
 }
+.area-block-high-occupancy {
+  border-color: #f56c6c;
+  background: #fef0f0;
+}
+.area-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  gap: 6px;
+}
 .area-name {
   font-size: 14px;
   font-weight: 600;
   color: #303133;
-  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .area-capacity {
   font-size: 12px;
@@ -416,7 +630,9 @@ onMounted(async () => {
 .ranking-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
 }
 .ranking-item {
   display: flex;
@@ -429,6 +645,9 @@ onMounted(async () => {
 }
 .ranking-item:hover {
   background: #f5f7fa;
+}
+.ranking-high {
+  background: #fef0f0;
 }
 .ranking-num {
   width: 24px;
@@ -454,6 +673,8 @@ onMounted(async () => {
   font-size: 13px;
   font-weight: 500;
   color: #303133;
+  display: flex;
+  align-items: center;
 }
 .ranking-detail {
   font-size: 11px;
@@ -464,6 +685,52 @@ onMounted(async () => {
   font-weight: 700;
 }
 
+.resp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.resp-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-size: 13px;
+}
+.resp-item:hover {
+  background: #f5f7fa;
+}
+.resp-item-active {
+  background: #ecf5ff;
+  color: #409eff;
+}
+.resp-name {
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.resp-counts {
+  display: flex;
+  gap: 4px;
+}
+.resp-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.resp-badge-green { background: #f0f9eb; color: #67c23a; }
+.resp-badge-red { background: #fef0f0; color: #f56c6c; }
+.resp-badge-orange { background: #fdf6ec; color: #e6a23c; }
+
+.area-card-high-occupancy {
+  border: 2px solid #f56c6c;
+  box-shadow: 0 0 0 1px rgba(245,108,108,0.1);
+}
 .area-section-header {
   display: flex;
   justify-content: space-between;
@@ -471,6 +738,8 @@ onMounted(async () => {
   margin-bottom: 16px;
   padding-bottom: 10px;
   border-bottom: 1px solid #ebeef5;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .area-section-title {
   font-size: 16px;
@@ -485,6 +754,8 @@ onMounted(async () => {
 .area-section-stats {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .layer-row {
@@ -502,7 +773,6 @@ onMounted(async () => {
   font-size: 13px;
   font-weight: 600;
   color: #606266;
-  padding-top: 8px;
   text-align: center;
   background: #f5f7fa;
   border-radius: 4px;
@@ -521,9 +791,10 @@ onMounted(async () => {
   cursor: pointer;
   transition: all 0.2s;
   border: 2px solid transparent;
-  min-height: 140px;
+  min-height: 160px;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .position-card:hover {
   transform: translateY(-2px);
@@ -548,9 +819,17 @@ onMounted(async () => {
 .pos-occupied:hover {
   border-color: #67c23a;
 }
+.pos-expiring {
+  background: #fdf6ec;
+  border-color: #f5dab1;
+}
+.pos-overdue {
+  background: #fef0f0;
+  border-color: #fab6b6;
+}
 .pos-dimmed {
-  opacity: 0.4;
-  filter: grayscale(0.5);
+  opacity: 0.35;
+  filter: grayscale(0.6);
 }
 .pos-dimmed:hover {
   opacity: 0.7;
@@ -650,6 +929,14 @@ onMounted(async () => {
   margin-top: 4px;
   flex-wrap: wrap;
 }
+.pos-update-time {
+  font-size: 10px;
+  color: #b0b3b8;
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .pos-free-icon {
   margin-bottom: 4px;
   opacity: 0.6;
@@ -657,5 +944,28 @@ onMounted(async () => {
 .pos-free-text {
   font-size: 12px;
   color: #c0c4cc;
+}
+
+.free-pos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.free-pos-item {
+  text-align: center;
+  padding: 10px 8px;
+  border: 1px dashed #dcdfe6;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #606266;
+  transition: all 0.2s;
+}
+.free-pos-item:hover {
+  border-color: #409eff;
+  background: #ecf5ff;
+  color: #409eff;
 }
 </style>

@@ -651,7 +651,8 @@ onMounted(async () => {
   if (route.query.status) filters.status = route.query.status
   if (route.query.anomalyType) filters.anomalyType = route.query.anomalyType
   if (route.query.overdue === 'true') filters.overdue = 'true'
-  if (route.query.hangId) filters.hangId = route.query.hangId
+  const queryHangId = route.query.hangId
+  if (queryHangId) filters.hangId = queryHangId
   if (route.query.needFollowUp === 'true') {
     filters.needFollowUp = 'true'
     needFollowUpFilter.value = 'true'
@@ -663,6 +664,24 @@ onMounted(async () => {
   if (route.query.todayNext === 'true') {
     filters.todayNext = 'true'
     needFollowUpFilter.value = 'today'
+  }
+  if (queryHangId && route.query.createFromBoard === '1') {
+    Object.assign(createForm, { hangId: Number(queryHangId), anomalyType: '', description: '', responsibleId: '', expectedHandleDate: '' })
+    try {
+      const [rp, h, u] = await Promise.all([
+        getResponsiblePersonsApi(),
+        getHangingRecordsApi({ pageSize: 200 }),
+        getUsersApi()
+      ])
+      responsiblePersons.value = rp.data
+      hangOptions.value = h.data
+      users.value = u.data
+      const selectedHang = hangOptions.value.find(x => String(x.id) === String(queryHangId))
+      if (selectedHang && selectedHang.responsible_id) {
+        createForm.responsibleId = selectedHang.responsible_id
+      }
+    } catch (e) {}
+    createDialogVisible.value = true
   }
   loadData()
 })

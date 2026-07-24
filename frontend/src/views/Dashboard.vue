@@ -13,18 +13,6 @@
     </el-row>
 
     <el-row :gutter="16" class="mb-16">
-      <el-col :span="4" v-for="s in anomalyCards" :key="s.label">
-        <div class="stat-card flex-between" :style="{ cursor: s.click ? 'pointer' : 'default', borderLeft: '4px solid #f56c6c' }" @click="s.click && s.click()">
-          <div>
-            <div class="stat-label">{{ s.label }}</div>
-            <div class="stat-value" :style="{ color: s.color, fontSize: '32px' }">{{ s.value }}</div>
-          </div>
-          <el-icon class="stat-icon" :size="36" :style="{ color: s.color }"><component :is="s.icon" /></el-icon>
-        </div>
-      </el-col>
-    </el-row>
-
-    <el-row :gutter="16" class="mb-16">
       <el-col :span="14">
         <div class="stat-card">
           <div class="detail-section-title">分类分布</div>
@@ -42,16 +30,37 @@
     <el-row :gutter="16" class="mb-16">
       <el-col :span="14">
         <div class="stat-card">
-          <div class="detail-section-title">陈列区域占用</div>
+          <div class="detail-section-title">
+            <span style="cursor:pointer;" @click="router.push('/location-board')">陈列区域占用
+              <el-icon style="margin-left:4px;vertical-align:middle;"><TopRight /></el-icon>
+            </span>
+          </div>
           <div ref="areaChartRef" class="chart-container" style="height:320px;"></div>
         </div>
       </el-col>
       <el-col :span="10">
         <div class="stat-card">
-          <div class="detail-section-title">
-            <span style="cursor:pointer;" @click="router.push('/anomaly-tickets')">异常类型分布</span>
+          <div class="detail-section-title" style="border-left-color:#409eff;">
+            <span style="cursor:pointer;" @click="router.push('/location-board')">区域占用率排行
+              <el-icon style="margin-left:4px;vertical-align:middle;"><TopRight /></el-icon>
+            </span>
           </div>
-          <div ref="missingChartRef" class="chart-container" style="height:320px;"></div>
+          <div class="mini-ranking">
+            <div
+              v-for="(item, idx) in areaRanking"
+              :key="item.id"
+              class="mini-ranking-item"
+              @click="router.push(`/location-board?areaId=${item.id}`)"
+            >
+              <span class="mini-rank-num" :class="idx < 3 ? `mini-rank-${idx+1}` : ''">{{ idx + 1 }}</span>
+              <span class="mini-rank-name">{{ item.area_name }}</span>
+              <span class="mini-rank-bar">
+                <span class="mini-rank-fill" :style="{ width: item.occupancy_rate + '%', background: item.occupancy_rate >= 90 ? '#f56c6c' : item.occupancy_rate >= 70 ? '#e6a23c' : '#67c23a' }"></span>
+              </span>
+              <span class="mini-rank-rate" :style="{ color: item.occupancy_rate >= 90 ? '#f56c6c' : item.occupancy_rate >= 70 ? '#e6a23c' : '#67c23a' }">{{ item.occupancy_rate }}%</span>
+              <el-tag v-if="item.abnormal_count > 0" type="danger" size="small" effect="plain" style="margin-left:4px;">{{ item.abnormal_count }}异常</el-tag>
+            </div>
+          </div>
         </div>
       </el-col>
     </el-row>
@@ -209,10 +218,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
-import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight, Clock, Bell, CircleCheck } from '@element-plus/icons-vue'
+import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight, Bell, Grid, TopRight } from '@element-plus/icons-vue'
 import { getOverviewStatsApi } from '@/api'
 
 const router = useRouter()
@@ -221,13 +230,15 @@ const stats = reactive({
   pendingConfirmList: [], expiryReminders: [], anomalies: {}, trendData: []
 })
 const summaryCards = ref([])
-const anomalyCards = ref([])
 const activeTab = ref('expiry')
+
+const areaRanking = computed(() => {
+  return [...(stats.areaOccupancy || [])].sort((a, b) => b.occupancy_rate - a.occupancy_rate)
+})
 
 const categoryChartRef = ref()
 const statusChartRef = ref()
 const areaChartRef = ref()
-const missingChartRef = ref()
 const trendChartRef = ref()
 let charts = []
 
@@ -237,18 +248,12 @@ async function loadData() {
   summaryCards.value = [
     { label: '挂牌总数', value: stats.summary.totalTags || 0, color: '#409eff', icon: Tickets, click: null },
     { label: '样衣总数', value: stats.summary.totalGarments || 0, color: '#67c23a', icon: CollectionTag, click: null },
-    { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull, click: null },
-    { label: '即将到期', value: stats.summary.expiringCount || 0, color: '#e6a23c', icon: Clock, click: null },
-    { label: '已超期', value: stats.summary.overdueCount || 0, color: '#f56c6c', icon: Bell, click: null },
-    { label: '待回收确认', value: stats.summary.pendingRecovery || 0, color: '#f56c6c', icon: RefreshRight, click: null },
-    { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning, click: null }
-  ]
-  anomalyCards.value = [
-    { label: '异常处置单总数', value: stats.summary.totalAnomaly || 0, color: '#909399', icon: CircleCheck, click: () => router.push('/anomaly-tickets') },
-    { label: '待处理异常', value: stats.summary.pendingAnomaly || 0, color: '#f56c6c', icon: Warning, click: () => router.push('/anomaly-tickets?status=待处理') },
-    { label: '超期异常', value: stats.summary.overdueAnomaly || 0, color: '#f56c6c', icon: Bell, click: () => router.push('/anomaly-tickets?overdue=true') },
-    { label: '待跟进异常', value: stats.summary.needFollowUpAnomaly || 0, color: '#e6a23c', icon: Clock, click: () => router.push('/anomaly-tickets?needFollowUp=true') },
-    { label: '今日需跟进', value: stats.summary.todayFollowUpAnomaly || 0, color: '#409eff', icon: Bell, click: () => router.push('/anomaly-tickets?todayNext=true') }
+    { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull, click: () => router.push('/hanging-records?status=已挂装') },
+    { label: '异常库位', value: stats.summary.totalAbnormalLocations || 0, color: '#f56c6c', icon: Warning, click: () => router.push('/location-board?tagStatus=异常观察') },
+    { label: '库位看板', value: '看板', color: '#409eff', icon: Grid, click: () => router.push('/location-board') },
+    { label: '待回收确认', value: stats.summary.pendingRecovery || 0, color: '#e6a23c', icon: RefreshRight, click: () => router.push('/recovery') },
+    { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning, click: () => router.push('/missing-parts?status=未处理') },
+    { label: '已超期', value: stats.summary.overdueCount || 0, color: '#f56c6c', icon: Bell, click: () => router.push('/hanging-records?expiryStatus=overdue') }
   ]
   await nextTick()
   renderCharts()
@@ -292,9 +297,17 @@ function renderCharts() {
     const c = echarts.init(areaChartRef.value)
     const d = stats.areaOccupancy || []
     c.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      tooltip: {
+        trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: (params) => {
+          const p = params[0]
+          const item = d[p.dataIndex]
+          if (!item) return ''
+          return `${p.name}<br/>已使用: ${item.used_count}<br/>容量: ${item.capacity}<br/>占用率: ${item.occupancy_rate}%${item.abnormal_count > 0 ? `<br/><span style="color:#f56c6c;">异常: ${item.abnormal_count}</span>` : ''}`
+        }
+      },
       grid: { left: 50, right: 20, top: 20, bottom: 50 },
-      legend: { bottom: 0, data: ['已使用', '容量'] },
+      legend: { bottom: 0, data: ['已使用', '剩余容量'] },
       xAxis: { type: 'category', data: d.map(x => x.area_name), axisLabel: { rotate: 20, fontSize: 11 } },
       yAxis: { type: 'value' },
       series: [
@@ -302,28 +315,10 @@ function renderCharts() {
         { name: '剩余容量', type: 'bar', stack: 'total', data: d.map(x => Math.max((x.capacity || 0) - (x.used_count || 0), 0)), itemStyle: { color: '#dcdfe6' } }
       ]
     })
-    charts.push(c); window.addEventListener('resize', () => c.resize())
-  }
-
-  if (missingChartRef.value) {
-    const c = echarts.init(missingChartRef.value)
-    const anomalyData = stats.anomalyTypeStats && stats.anomalyTypeStats.length > 0
-      ? stats.anomalyTypeStats.map(x => ({ name: x.anomaly_type, value: x.count }))
-      : (stats.missingTypeStats || []).map(x => ({ name: x.missing_type, value: x.count || x.value }))
-    c.setOption({
-      tooltip: { trigger: 'axis' },
-      grid: { left: 90, right: 20, top: 10, bottom: 30 },
-      xAxis: { type: 'value' },
-      yAxis: { type: 'category', data: anomalyData.map(x => x.name).reverse() },
-      series: [{
-        type: 'bar', data: anomalyData.map(x => x.value).reverse(),
-        itemStyle: { color: '#f56c6c' }, barWidth: 18,
-        label: { show: true, position: 'right', formatter: '{c}条' }
-      }]
-    })
     c.off('click')
     c.on('click', (params) => {
-      router.push(`/anomaly-tickets?anomalyType=${encodeURIComponent(params.name)}`)
+      const item = d[params.dataIndex]
+      if (item) router.push(`/location-board?areaId=${item.id}`)
     })
     charts.push(c); window.addEventListener('resize', () => c.resize())
   }
@@ -348,3 +343,70 @@ function renderCharts() {
 
 onMounted(loadData)
 </script>
+
+<style scoped>
+.mini-ranking {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+.mini-ranking-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-size: 13px;
+}
+.mini-ranking-item:hover {
+  background: #f5f7fa;
+}
+.mini-rank-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #dcdfe6;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.mini-rank-1 { background: #f56c6c; }
+.mini-rank-2 { background: #e6a23c; }
+.mini-rank-3 { background: #409eff; }
+.mini-rank-name {
+  width: 100px;
+  flex-shrink: 0;
+  color: #303133;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mini-rank-bar {
+  flex: 1;
+  height: 8px;
+  background: #ebeef5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.mini-rank-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.mini-rank-rate {
+  width: 48px;
+  text-align: right;
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+</style>

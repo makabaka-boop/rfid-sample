@@ -20,6 +20,12 @@ const routes = [
         meta: { title: '流转概览', icon: 'DataAnalysis' }
       },
       {
+        path: 'location-board',
+        name: 'LocationBoard',
+        component: () => import('@/views/LocationBoard.vue'),
+        meta: { title: '库位占用看板', icon: 'Grid' }
+      },
+      {
         path: 'garments',
         name: 'Garments',
         component: () => import('@/views/Garments.vue'),

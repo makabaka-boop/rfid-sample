@@ -45,6 +45,10 @@ export const getMissingPartsApi = (params) => request.get('/missing-parts', { pa
 
 export const getOverviewStatsApi = () => request.get('/statistics/overview')
 
+export const getLocationBoardApi = (params) => request.get('/location-board', { params })
+export const getFreePositionsApi = (params) => request.get('/location-board/free-positions', { params })
+export const exportLocationBoardApi = (params) => request.get('/location-board/export', { params, responseType: 'blob' })
+
 export const getAnomalyTypesApi = () => request.get('/anomaly-tickets/types')
 export const getAnomalyTicketsApi = (params) => request.get('/anomaly-tickets', { params })
 export const getAnomalyTicketApi = (id) => request.get(`/anomaly-tickets/${id}`)

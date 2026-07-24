@@ -181,6 +181,26 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <el-form-item v-if="createForm.areaId" label="推荐空位">
+          <div v-loading="freeSlotsLoading" style="width:100%;">
+            <div v-if="recommendedFreeSlots.length" style="display:flex; flex-wrap:wrap; gap:6px;">
+              <el-tag
+                v-for="s in recommendedFreeSlots"
+                :key="`fs-${s.layer_no}-${s.position_no}`"
+                size="small"
+                type="success"
+                effect="plain"
+                style="cursor:pointer;"
+                @click="applyFreeSlot(s)"
+              >
+                <el-icon style="margin-right:2px;"><Aim /></el-icon>
+                第{{ s.layer_no }}层-{{ s.position_no }}号位
+              </el-tag>
+              <span style="color:#909399; font-size:12px; line-height:24px;">点击自动填入层号/位号</span>
+            </div>
+            <span v-else style="color:#909399; font-size:12px;">该区域暂无推荐空闲库位</span>
+          </div>
+        </el-form-item>
         <el-form-item label="责任人" prop="responsibleId">
           <el-select v-model="createForm.responsibleId" filterable style="width:100%;">
             <el-option v-for="p in responsiblePersons" :key="p.id" :label="`${p.person_name}（${p.department}）`" :value="p.id" />
@@ -273,15 +293,18 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Refresh } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh, Aim } from '@element-plus/icons-vue'
 import { TAG_STATUS_OPTIONS, MISSING_TYPE_OPTIONS, getStatusTagType, EXPIRY_STATUS_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText } from '@/utils/constants'
 import {
   getCategoriesApi, getAreasApi, getResponsiblePersonsApi, getHangingRecordsApi,
   getAvailableTagsApi, getAvailableGarmentsApi, createHangingApi,
-  createSwapApi, requestRecoveryApi, createMissingPartApi
+  createSwapApi, requestRecoveryApi, createMissingPartApi, getSlotBoardFreeSlotsApi
 } from '@/api'
+
+const route = useRoute()
 
 const loading = ref(false)
 const tableData = ref([])
@@ -310,6 +333,26 @@ const createRules = {
   areaId: [{ required: true, message: '请选择区域', trigger: 'change' }],
   responsibleId: [{ required: true, message: '请选择责任人', trigger: 'change' }]
 }
+
+const recommendedFreeSlots = ref([])
+const freeSlotsLoading = ref(false)
+async function loadFreeSlots(areaId) {
+  if (!areaId) { recommendedFreeSlots.value = []; return }
+  freeSlotsLoading.value = true
+  try {
+    const res = await getSlotBoardFreeSlotsApi({ areaId })
+    recommendedFreeSlots.value = res.data[0]?.recommended_slots || []
+  } catch (e) {
+    recommendedFreeSlots.value = []
+  } finally {
+    freeSlotsLoading.value = false
+  }
+}
+function applyFreeSlot(slot) {
+  createForm.layerNo = slot.layer_no
+  createForm.positionNo = slot.position_no
+}
+watch(() => createForm.areaId, (val) => { loadFreeSlots(val) })
 
 const swapDialogVisible = ref(false)
 const swapTarget = ref(null)
@@ -356,8 +399,16 @@ function resetFilters() {
   loadData()
 }
 
-async function openCreateDialog() {
-  Object.assign(createForm, { tagId: '', garmentId: '', areaId: areas.value[0]?.id || '', layerNo: 1, positionNo: 1, responsibleId: responsiblePersons.value[0]?.id || '', expectedOffDate: '', remark: '' })
+async function openCreateDialog(preset) {
+  Object.assign(createForm, {
+    tagId: '', garmentId: '',
+    areaId: preset?.areaId || areas.value[0]?.id || '',
+    layerNo: preset?.layerNo || 1,
+    positionNo: preset?.positionNo || 1,
+    responsibleId: responsiblePersons.value[0]?.id || '',
+    expectedOffDate: '', remark: ''
+  })
+  loadFreeSlots(createForm.areaId)
   try {
     const [t, g] = await Promise.all([getAvailableTagsApi(), getAvailableGarmentsApi()])
     availableTags.value = t.data
@@ -446,5 +497,13 @@ async function submitMissing() {
 onMounted(async () => {
   await loadMaster()
   loadData()
+  if (route.query.autoOpen === '1') {
+    const preset = {
+      areaId: route.query.presetAreaId ? Number(route.query.presetAreaId) : null,
+      layerNo: route.query.presetLayerNo ? Number(route.query.presetLayerNo) : null,
+      positionNo: route.query.presetPositionNo ? Number(route.query.presetPositionNo) : null
+    }
+    openCreateDialog(preset)
+  }
 })
 </script>

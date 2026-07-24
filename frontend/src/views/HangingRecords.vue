@@ -165,7 +165,7 @@
         <el-row :gutter="12">
           <el-col :span="8">
             <el-form-item label="陈列区域" prop="areaId">
-              <el-select v-model="createForm.areaId" style="width:100%;">
+              <el-select v-model="createForm.areaId" style="width:100%;" @change="onCreateAreaChange">
                 <el-option v-for="a in areas" :key="a.id" :label="a.area_name" :value="a.id" />
               </el-select>
             </el-form-item>
@@ -181,6 +181,20 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <div v-if="createForm.areaId && recommendedFreePositions.length > 0" class="recommend-section">
+          <div class="recommend-title">
+            <el-icon><InfoFilled /></el-icon> 推荐空闲库位（点击选择）
+          </div>
+          <div class="recommend-list">
+            <span
+              v-for="fp in recommendedFreePositions.slice(0, 20)"
+              :key="`${fp.layerNo}_${fp.positionNo}`"
+              class="recommend-item"
+              :class="{ 'recommend-item-active': createForm.layerNo === fp.layerNo && createForm.positionNo === fp.positionNo }"
+              @click="selectRecommendedPosition(fp)"
+            >{{ fp.label }}</span>
+          </div>
+        </div>
         <el-form-item label="责任人" prop="responsibleId">
           <el-select v-model="createForm.responsibleId" filterable style="width:100%;">
             <el-option v-for="p in responsiblePersons" :key="p.id" :label="`${p.person_name}（${p.department}）`" :value="p.id" />
@@ -274,14 +288,17 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Refresh } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import { TAG_STATUS_OPTIONS, MISSING_TYPE_OPTIONS, getStatusTagType, EXPIRY_STATUS_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText } from '@/utils/constants'
 import {
   getCategoriesApi, getAreasApi, getResponsiblePersonsApi, getHangingRecordsApi,
   getAvailableTagsApi, getAvailableGarmentsApi, createHangingApi,
-  createSwapApi, requestRecoveryApi, createMissingPartApi
+  createSwapApi, requestRecoveryApi, createMissingPartApi, getFreePositionsApi
 } from '@/api'
+
+const route = useRoute()
 
 const loading = ref(false)
 const tableData = ref([])
@@ -303,6 +320,7 @@ const filters = reactive({
 const createDialogVisible = ref(false)
 const createFormRef = ref()
 const submitLoading = ref(false)
+const recommendedFreePositions = ref([])
 const createForm = reactive({ tagId: '', garmentId: '', areaId: '', layerNo: 1, positionNo: 1, responsibleId: '', expectedOffDate: '', remark: '' })
 const createRules = {
   tagId: [{ required: true, message: '请选择挂牌', trigger: 'change' }],
@@ -358,6 +376,7 @@ function resetFilters() {
 
 async function openCreateDialog() {
   Object.assign(createForm, { tagId: '', garmentId: '', areaId: areas.value[0]?.id || '', layerNo: 1, positionNo: 1, responsibleId: responsiblePersons.value[0]?.id || '', expectedOffDate: '', remark: '' })
+  recommendedFreePositions.value = []
   try {
     const [t, g] = await Promise.all([getAvailableTagsApi(), getAvailableGarmentsApi()])
     availableTags.value = t.data
@@ -366,6 +385,20 @@ async function openCreateDialog() {
     if (!availableGarments.value.length) return ElMessage.warning('暂无可挂的样衣')
     createDialogVisible.value = true
   } catch (e) {}
+}
+
+async function onCreateAreaChange() {
+  recommendedFreePositions.value = []
+  if (!createForm.areaId) return
+  try {
+    const res = await getFreePositionsApi({ areaId: createForm.areaId })
+    recommendedFreePositions.value = res.data.freePositions || []
+  } catch (e) {}
+}
+
+function selectRecommendedPosition(fp) {
+  createForm.layerNo = fp.layerNo
+  createForm.positionNo = fp.positionNo
 }
 
 async function submitCreate() {
@@ -445,6 +478,75 @@ async function submitMissing() {
 
 onMounted(async () => {
   await loadMaster()
+  if (route.query.status) filters.status = route.query.status
+  if (route.query.areaId) filters.areaId = Number(route.query.areaId)
+  if (route.query.categoryId) filters.categoryId = Number(route.query.categoryId)
+  if (route.query.responsibleId) filters.responsibleId = Number(route.query.responsibleId)
+  if (route.query.expiryStatus) filters.expiryStatus = route.query.expiryStatus
+  if (route.query.keyword) filters.keyword = route.query.keyword
   loadData()
+  const { areaId: qAreaId, layerNo, positionNo } = route.query
+  if (qAreaId && layerNo && positionNo) {
+    Object.assign(createForm, {
+      tagId: '', garmentId: '',
+      areaId: Number(qAreaId),
+      layerNo: Number(layerNo),
+      positionNo: Number(positionNo),
+      responsibleId: responsiblePersons.value[0]?.id || '',
+      expectedOffDate: '', remark: ''
+    })
+    try {
+      const [t, g, fp] = await Promise.all([getAvailableTagsApi(), getAvailableGarmentsApi(), getFreePositionsApi({ areaId: Number(qAreaId) })])
+      availableTags.value = t.data
+      availableGarments.value = g.data
+      recommendedFreePositions.value = fp.data.freePositions || []
+      if (availableTags.value.length && availableGarments.value.length) {
+        createDialogVisible.value = true
+      }
+    } catch (e) {}
+  }
 })
 </script>
+
+<style scoped>
+.recommend-section {
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  background: #f0f9eb;
+  border-radius: 6px;
+  border: 1px solid #e1f3d8;
+}
+.recommend-title {
+  font-size: 12px;
+  color: #67c23a;
+  font-weight: 600;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.recommend-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.recommend-item {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  cursor: pointer;
+  color: #606266;
+  transition: all 0.2s;
+}
+.recommend-item:hover {
+  border-color: #409eff;
+  color: #409eff;
+}
+.recommend-item-active {
+  background: #409eff;
+  border-color: #409eff;
+  color: #fff !important;
+}
+</style>

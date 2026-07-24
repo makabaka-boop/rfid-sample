@@ -719,10 +719,21 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     GROUP BY p.id ORDER BY count DESC`).all();
 
   const areaOccupancy = db.prepare(`SELECT da.id, da.area_code, da.area_name, da.floor, da.capacity,
-    COUNT(h.id) as used_count
+    COUNT(CASE WHEN h.status IN ('已挂装','待调换','待回收确认','异常观察') THEN h.id END) as used_count,
+    COUNT(CASE WHEN h.status = '异常观察' OR EXISTS (SELECT 1 FROM anomaly_tickets a WHERE a.hang_id = h.id AND a.status != '已关闭') OR EXISTS (SELECT 1 FROM missing_part_notes m WHERE m.hang_id = h.id AND m.status != '已处理') THEN h.id END) as abnormal_count,
+    COUNT(CASE WHEN h.status = '待回收确认' THEN h.id END) as pending_recovery_count,
+    COUNT(CASE WHEN h.status = '待调换' THEN h.id END) as pending_swap_count
     FROM display_areas da
-    LEFT JOIN hanging_records h ON da.id = h.area_id AND h.status IN ('已挂装','待调换')
+    LEFT JOIN hanging_records h ON da.id = h.area_id AND h.status IN ('已挂装','待调换','待回收确认','异常观察')
     GROUP BY da.id ORDER BY da.floor, da.area_code`).all();
+
+  const areaOccupancyWithRate = areaOccupancy.map(a => ({
+    ...a,
+    free_count: Math.max((a.capacity || 0) - (a.used_count || 0), 0),
+    occupancy_rate: a.capacity > 0 ? Math.round((a.used_count / a.capacity) * 1000) / 10 : 0
+  }));
+
+  const totalAbnormalLocations = areaOccupancy.reduce((sum, a) => sum + (a.abnormal_count || 0), 0);
 
   const missingTypeStats = db.prepare(`SELECT missing_type, COUNT(*) as count 
     FROM missing_part_notes GROUP BY missing_type ORDER BY count DESC`).all();
@@ -813,10 +824,10 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
         totalTags, totalGarments, totalHanging, pendingRecovery, unhandledMissing,
         expiringCount, overdueCount, statusDistribution,
         totalAnomaly, pendingAnomaly, overdueAnomaly,
-        needFollowUpAnomaly, todayFollowUpAnomaly
+        needFollowUpAnomaly, todayFollowUpAnomaly, totalAbnormalLocations
       },
       categoryDistribution,
-      areaOccupancy,
+      areaOccupancy: areaOccupancyWithRate,
       missingTypeStats,
       anomalyTypeStats,
       pendingConfirmList,
@@ -1258,6 +1269,367 @@ app.get('/api/hanging-records/:id/anomalies', authMiddleware, (req, res) => {
   }));
 
   res.json({ data: enrichedWithFollowUps });
+});
+
+app.get('/api/location-board', authMiddleware, (req, res) => {
+  const { floor, areaId, tagStatus, responsibleId, keyword, onlyFree } = req.query;
+
+  const ACTIVE_STATUSES = ['已挂装', '待调换', '待回收确认', '异常观察'];
+  const POSITIONS_PER_LAYER = 5;
+  const HIGH_OCCUPANCY_THRESHOLD = 85;
+  const hasExtraFilter = tagStatus || responsibleId || keyword || onlyFree === 'true';
+
+  let areaSql = 'SELECT * FROM display_areas WHERE 1=1';
+  const areaParams = [];
+  if (floor) { areaSql += ' AND floor = ?'; areaParams.push(Number(floor)); }
+  if (areaId) { areaSql += ' AND id = ?'; areaParams.push(Number(areaId)); }
+  areaSql += ' ORDER BY floor, area_code';
+  const areas = db.prepare(areaSql).all(...areaParams);
+
+  let hangSql = `SELECT h.*,
+    t.tag_code, g.garment_code, g.garment_name,
+    da.area_name, da.floor as area_floor,
+    rp.person_name, rp.id as responsible_person_id,
+    julianday(h.expected_off_date) - julianday(date('now')) as days_left,
+    (SELECT COUNT(*) FROM anomaly_tickets a WHERE a.hang_id = h.id AND a.status != '已关闭') as active_anomaly_count,
+    (SELECT COUNT(*) FROM missing_part_notes m WHERE m.hang_id = h.id AND m.status != '已处理') as unresolved_missing_count,
+    (SELECT MAX(updated_at) FROM (
+      SELECT updated_at as updated_at FROM tags WHERE id = h.tag_id
+      UNION ALL
+      SELECT created_at FROM anomaly_tickets WHERE hang_id = h.id AND status != '已关闭'
+      UNION ALL
+      SELECT created_at FROM missing_part_notes WHERE hang_id = h.id AND status != '已处理'
+      UNION ALL
+      SELECT created_at FROM swap_records WHERE original_hang_id = h.id
+      UNION ALL
+      SELECT recover_time FROM recovery_records WHERE hang_id = h.id
+    )) as last_status_update
+    FROM hanging_records h
+    LEFT JOIN tags t ON h.tag_id = t.id
+    LEFT JOIN garments g ON h.garment_id = g.id
+    LEFT JOIN display_areas da ON h.area_id = da.id
+    LEFT JOIN responsible_persons rp ON h.responsible_id = rp.id
+    WHERE h.status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`;
+  const hangParams = [...ACTIVE_STATUSES];
+  if (floor) { hangSql += ' AND da.floor = ?'; hangParams.push(Number(floor)); }
+  if (areaId) { hangSql += ' AND h.area_id = ?'; hangParams.push(Number(areaId)); }
+  const allHangs = db.prepare(hangSql).all(...hangParams);
+
+  const hangMap = {};
+  for (const h of allHangs) {
+    const key = `${h.area_id}_${h.layer_no}_${h.position_no}`;
+    hangMap[key] = h;
+  }
+
+  function matchesFilter(h) {
+    if (tagStatus && h.status !== tagStatus) return false;
+    if (responsibleId && String(h.responsible_id) !== String(responsibleId)) return false;
+    if (keyword) {
+      const matchTag = h.tag_code && h.tag_code.includes(keyword);
+      const matchCode = h.garment_code && h.garment_code.includes(keyword);
+      const matchName = h.garment_name && h.garment_name.includes(keyword);
+      if (!matchTag && !matchCode && !matchName) return false;
+    }
+    return true;
+  }
+
+  let totalCapacity = 0;
+  let totalOccupied = 0;
+  let totalFree = 0;
+  let totalAbnormal = 0;
+  let totalPendingRecovery = 0;
+  let totalPendingSwap = 0;
+  let totalMatchedOccupied = 0;
+  let totalHighOccupancyAreas = 0;
+  let totalExpiringSoon = 0;
+  let totalOverdue = 0;
+
+  const respMap = {};
+  const floorMap = {};
+  const areaResults = [];
+
+  for (const area of areas) {
+    const areaHangs = allHangs.filter(h => h.area_id === area.id);
+    const maxLayerFromHangs = areaHangs.length > 0 ? Math.max(...areaHangs.map(h => h.layer_no)) : 0;
+    const maxPosFromHangs = areaHangs.length > 0 ? Math.max(...areaHangs.map(h => h.position_no)) : 0;
+
+    const defaultLayers = Math.max(1, Math.ceil(area.capacity / POSITIONS_PER_LAYER));
+    const totalLayers = Math.max(defaultLayers, maxLayerFromHangs);
+    const effectivePositionsPerLayer = Math.max(POSITIONS_PER_LAYER, maxPosFromHangs);
+
+    let occupiedCount = 0;
+    let matchedOccupiedCount = 0;
+    let abnormalCount = 0;
+    let pendingRecoveryCount = 0;
+    let pendingSwapCount = 0;
+    let expiringSoonCount = 0;
+    let overdueCount = 0;
+    let freePositions = [];
+
+    const layers = [];
+    for (let layerNo = 1; layerNo <= totalLayers; layerNo++) {
+      const positions = [];
+      for (let posNo = 1; posNo <= effectivePositionsPerLayer; posNo++) {
+        const key = `${area.id}_${layerNo}_${posNo}`;
+        const hang = hangMap[key];
+        if (hang) {
+          const expiry = getExpiryStatus(hang.expected_off_date);
+          const hasAnomaly = (hang.active_anomaly_count || 0) > 0 || (hang.unresolved_missing_count || 0) > 0;
+          const isAbnormal = hang.status === '异常观察' || hasAnomaly;
+          const matched = matchesFilter(hang);
+          const isHidden = onlyFree === 'true';
+
+          occupiedCount++;
+          if (matched && !isHidden) matchedOccupiedCount++;
+          if (isAbnormal) abnormalCount++;
+          if (hang.status === '待回收确认') pendingRecoveryCount++;
+          if (hang.status === '待调换') pendingSwapCount++;
+          if (expiry?.status === 'expiring') expiringSoonCount++;
+          if (expiry?.status === 'overdue') overdueCount++;
+
+          if (!respMap[hang.responsible_id]) {
+            respMap[hang.responsible_id] = {
+              responsibleId: hang.responsible_person_id,
+              responsibleName: hang.person_name,
+              totalLocations: 0, abnormalCount: 0, expiringCount: 0, overdueCount: 0
+            };
+          }
+          respMap[hang.responsible_id].totalLocations++;
+          if (isAbnormal) respMap[hang.responsible_id].abnormalCount++;
+          if (expiry?.status === 'expiring') respMap[hang.responsible_id].expiringCount++;
+          if (expiry?.status === 'overdue') respMap[hang.responsible_id].overdueCount++;
+
+          positions.push({
+            positionNo: posNo,
+            status: 'occupied',
+            filterMatched: matched && !isHidden,
+            hangStatus: hang.status,
+            hangId: hang.id,
+            garmentCode: hang.garment_code,
+            garmentName: hang.garment_name,
+            tagCode: hang.tag_code,
+            responsibleName: hang.person_name,
+            responsibleId: hang.responsible_person_id,
+            hangTime: hang.hang_time,
+            expectedOffDate: hang.expected_off_date,
+            expiryStatus: expiry?.status || null,
+            daysLeft: expiry?.daysLeft ?? null,
+            hasAnomaly: isAbnormal,
+            hasMissingPart: (hang.unresolved_missing_count || 0) > 0,
+            hasActiveTicket: (hang.active_anomaly_count || 0) > 0,
+            lastStatusUpdate: hang.last_status_update
+          });
+        } else {
+          freePositions.push({ layerNo, positionNo: posNo });
+          positions.push({
+            positionNo: posNo,
+            status: 'free',
+            filterMatched: onlyFree === 'true',
+            hangStatus: null,
+            hangId: null
+          });
+        }
+      }
+      layers.push({ layerNo, positions });
+    }
+
+    const displayCapacity = area.capacity;
+    const displayFree = Math.max(0, displayCapacity - occupiedCount);
+    const occupancyRate = displayCapacity > 0 ? Math.round((occupiedCount / displayCapacity) * 1000) / 10 : 0;
+    const isHighOccupancy = occupancyRate >= HIGH_OCCUPANCY_THRESHOLD;
+
+    totalCapacity += displayCapacity;
+    totalOccupied += occupiedCount;
+    totalFree += displayFree;
+    totalAbnormal += abnormalCount;
+    totalPendingRecovery += pendingRecoveryCount;
+    totalPendingSwap += pendingSwapCount;
+    totalMatchedOccupied += matchedOccupiedCount;
+    totalExpiringSoon += expiringSoonCount;
+    totalOverdue += overdueCount;
+    if (isHighOccupancy) totalHighOccupancyAreas++;
+
+    if (!floorMap[area.floor]) {
+      floorMap[area.floor] = { floor: area.floor, totalCapacity: 0, occupied: 0, free: 0, abnormal: 0 };
+    }
+    floorMap[area.floor].totalCapacity += displayCapacity;
+    floorMap[area.floor].occupied += occupiedCount;
+    floorMap[area.floor].free += displayFree;
+    floorMap[area.floor].abnormal += abnormalCount;
+
+    areaResults.push({
+      id: area.id,
+      areaCode: area.area_code,
+      areaName: area.area_name,
+      floor: area.floor,
+      zone: area.zone,
+      capacity: displayCapacity,
+      occupiedCount,
+      matchedOccupiedCount,
+      freeCount: displayFree,
+      abnormalCount,
+      pendingRecoveryCount,
+      pendingSwapCount,
+      expiringSoonCount,
+      overdueCount,
+      freePositions: freePositions.slice(0, 20),
+      occupancyRate,
+      isHighOccupancy,
+      totalLayers,
+      positionsPerLayer: effectivePositionsPerLayer,
+      layers
+    });
+  }
+
+  const floorSummary = Object.values(floorMap).sort((a, b) => a.floor - b.floor);
+
+  const responsibleStats = Object.values(respMap).sort((a, b) => b.totalLocations - a.totalLocations);
+
+  const occupancyRanking = [...areaResults]
+    .sort((a, b) => b.occupancyRate - a.occupancyRate)
+    .map(a => ({
+      id: a.id,
+      areaName: a.areaName,
+      areaCode: a.areaCode,
+      floor: a.floor,
+      occupancyRate: a.occupancyRate,
+      occupiedCount: a.occupiedCount,
+      capacity: a.capacity,
+      abnormalCount: a.abnormalCount,
+      isHighOccupancy: a.isHighOccupancy
+    }));
+
+  res.json({
+    data: {
+      summary: {
+        totalCapacity,
+        totalOccupied,
+        totalFree,
+        totalAbnormal,
+        totalPendingRecovery,
+        totalPendingSwap,
+        totalMatchedOccupied,
+        totalHighOccupancyAreas,
+        totalExpiringSoon,
+        totalOverdue,
+        highOccupancyThreshold: HIGH_OCCUPANCY_THRESHOLD,
+        hasFilter: !!hasExtraFilter
+      },
+      floorSummary,
+      responsibleStats,
+      areas: areaResults,
+      occupancyRanking
+    }
+  });
+});
+
+app.get('/api/location-board/free-positions', authMiddleware, (req, res) => {
+  const { areaId } = req.query;
+  if (!areaId) return res.status(400).json({ message: '区域ID必填' });
+
+  const ACTIVE_STATUSES = ['已挂装', '待调换', '待回收确认', '异常观察'];
+  const POSITIONS_PER_LAYER = 5;
+
+  const area = db.prepare('SELECT * FROM display_areas WHERE id = ?').get(Number(areaId));
+  if (!area) return res.status(404).json({ message: '区域不存在' });
+
+  const hangs = db.prepare(`SELECT layer_no, position_no FROM hanging_records
+    WHERE area_id = ? AND status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`)
+    .all(Number(areaId), ...ACTIVE_STATUSES);
+
+  const occupiedSet = new Set(hangs.map(h => `${h.layer_no}_${h.position_no}`));
+  const defaultLayers = Math.max(1, Math.ceil(area.capacity / POSITIONS_PER_LAYER));
+  const maxPos = hangs.length > 0 ? Math.max(...hangs.map(h => h.position_no), POSITIONS_PER_LAYER) : POSITIONS_PER_LAYER;
+
+  const freePositions = [];
+  for (let l = 1; l <= defaultLayers; l++) {
+    for (let p = 1; p <= Math.max(POSITIONS_PER_LAYER, maxPos); p++) {
+      if (!occupiedSet.has(`${l}_${p}`)) {
+        freePositions.push({ layerNo: l, positionNo: p, label: `第${l}层第${p}位` });
+      }
+    }
+  }
+
+  res.json({
+    data: {
+      areaId: area.id,
+      areaName: area.area_name,
+      capacity: area.capacity,
+      totalFree: freePositions.length,
+      freePositions: freePositions.slice(0, 30)
+    }
+  });
+});
+
+app.get('/api/location-board/export', authMiddleware, (req, res) => {
+  const { floor, areaId, tagStatus, responsibleId, keyword } = req.query;
+
+  const ACTIVE_STATUSES = ['已挂装', '待调换', '待回收确认', '异常观察'];
+
+  let sql = `SELECT
+    da.floor, da.area_name, da.area_code,
+    h.layer_no, h.position_no, h.status as hang_status, h.hang_time, h.expected_off_date,
+    g.garment_code, g.garment_name,
+    t.tag_code,
+    rp.person_name as responsible_name,
+    julianday(h.expected_off_date) - julianday(date('now')) as days_left,
+    (SELECT COUNT(*) FROM anomaly_tickets a WHERE a.hang_id = h.id AND a.status != '已关闭') as anomaly_count,
+    (SELECT COUNT(*) FROM missing_part_notes m WHERE m.hang_id = h.id AND m.status != '已处理') as missing_count
+    FROM hanging_records h
+    LEFT JOIN tags t ON h.tag_id = t.id
+    LEFT JOIN garments g ON h.garment_id = g.id
+    LEFT JOIN display_areas da ON h.area_id = da.id
+    LEFT JOIN responsible_persons rp ON h.responsible_id = rp.id
+    WHERE h.status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`;
+  const params = [...ACTIVE_STATUSES];
+
+  if (floor) { sql += ' AND da.floor = ?'; params.push(Number(floor)); }
+  if (areaId) { sql += ' AND h.area_id = ?'; params.push(Number(areaId)); }
+  if (tagStatus) { sql += ' AND h.status = ?'; params.push(tagStatus); }
+  if (responsibleId) { sql += ' AND h.responsible_id = ?'; params.push(Number(responsibleId)); }
+  if (keyword) {
+    sql += ' AND (t.tag_code LIKE ? OR g.garment_code LIKE ? OR g.garment_name LIKE ?)';
+    params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+  }
+  sql += ' ORDER BY da.floor, da.area_code, h.layer_no, h.position_no';
+
+  const rows = db.prepare(sql).all(...params);
+
+  const headers = ['楼层', '区域名称', '区域编码', '层号', '位号', '状态', '样衣编码', '样衣名称', '挂牌编码', '负责人', '挂装时间', '预计下架日期', '剩余天数', '到期状态', '异常单数', '缺件数'];
+  const csvLines = [headers.join(',')];
+
+  for (const r of rows) {
+    const expiry = getExpiryStatus(r.expected_off_date);
+    const expiryLabel = !r.expected_off_date ? '未设置' :
+      expiry?.status === 'overdue' ? `已超期${Math.abs(expiry.daysLeft)}天` :
+      expiry?.status === 'expiring' ? `即将到期(${expiry.daysLeft}天)` : '正常';
+    const daysLeft = r.days_left != null ? Math.floor(r.days_left) : '';
+    const line = [
+      `${r.floor}楼`,
+      `"${r.area_name || ''}"`,
+      r.area_code || '',
+      r.layer_no,
+      r.position_no,
+      r.hang_status || '',
+      r.garment_code || '',
+      `"${r.garment_name || ''}"`,
+      r.tag_code || '',
+      r.responsible_name || '',
+      r.hang_time ? r.hang_time.substring(0, 19) : '',
+      r.expected_off_date || '',
+      daysLeft,
+      expiryLabel,
+      r.anomaly_count || 0,
+      r.missing_count || 0
+    ].join(',');
+    csvLines.push(line);
+  }
+
+  const csv = '\uFEFF' + csvLines.join('\n');
+  const filename = `库位明细_${dayjs().format('YYYYMMDDHHmmss')}.csv`;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(csv);
 });
 
 app.use((err, req, res, next) => {

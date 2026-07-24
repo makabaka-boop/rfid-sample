@@ -274,6 +274,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import { TAG_STATUS_OPTIONS, MISSING_TYPE_OPTIONS, getStatusTagType, EXPIRY_STATUS_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText } from '@/utils/constants'
@@ -282,6 +283,8 @@ import {
   getAvailableTagsApi, getAvailableGarmentsApi, createHangingApi,
   createSwapApi, requestRecoveryApi, createMissingPartApi
 } from '@/api'
+
+const route = useRoute()
 
 const loading = ref(false)
 const tableData = ref([])
@@ -445,6 +448,31 @@ async function submitMissing() {
 
 onMounted(async () => {
   await loadMaster()
+  if (route.query.status) filters.status = route.query.status
+  if (route.query.areaId) filters.areaId = Number(route.query.areaId)
+  if (route.query.categoryId) filters.categoryId = Number(route.query.categoryId)
+  if (route.query.responsibleId) filters.responsibleId = Number(route.query.responsibleId)
+  if (route.query.expiryStatus) filters.expiryStatus = route.query.expiryStatus
+  if (route.query.keyword) filters.keyword = route.query.keyword
   loadData()
+  const { areaId: qAreaId, layerNo, positionNo } = route.query
+  if (qAreaId && layerNo && positionNo) {
+    Object.assign(createForm, {
+      tagId: '', garmentId: '',
+      areaId: Number(qAreaId),
+      layerNo: Number(layerNo),
+      positionNo: Number(positionNo),
+      responsibleId: responsiblePersons.value[0]?.id || '',
+      expectedOffDate: '', remark: ''
+    })
+    try {
+      const [t, g] = await Promise.all([getAvailableTagsApi(), getAvailableGarmentsApi()])
+      availableTags.value = t.data
+      availableGarments.value = g.data
+      if (availableTags.value.length && availableGarments.value.length) {
+        createDialogVisible.value = true
+      }
+    } catch (e) {}
+  }
 })
 </script>

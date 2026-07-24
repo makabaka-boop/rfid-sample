@@ -145,11 +145,14 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Search, Refresh, WarningFilled } from '@element-plus/icons-vue'
 import { MISSING_TYPE_OPTIONS, MISSING_STATUS_OPTIONS, getStatusTagType } from '@/utils/constants'
 import dayjs from 'dayjs'
 import { getMissingPartsApi, createMissingPartApi, handleMissingPartApi, getHangingRecordsApi } from '@/api'
+
+const route = useRoute()
 
 const loading = ref(false)
 const tableData = ref([])
@@ -246,5 +249,10 @@ async function submitHandle() {
   } finally { submitLoading.value = false }
 }
 
-onMounted(loadData)
+onMounted(() => {
+  if (route.query.status) filters.status = route.query.status
+  if (route.query.missingType) filters.missingType = route.query.missingType
+  if (route.query.keyword) filters.keyword = route.query.keyword
+  loadData()
+})
 </script>

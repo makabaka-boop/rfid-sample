@@ -31,6 +31,8 @@ export const createHangingApi = (data) => request.post('/hanging', data)
 export const getHangingRecordsApi = (params) => request.get('/hanging-records', { params })
 export const getHangingRecordApi = (id) => request.get(`/hanging-records/${id}`)
 
+export const getSlotBoardApi = (params) => request.get('/slot-board', { params })
+
 export const createSwapApi = (data) => request.post('/swap', data)
 export const getSwapRecordsApi = (params) => request.get('/swap-records', { params })
 

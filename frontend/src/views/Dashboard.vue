@@ -42,7 +42,9 @@
     <el-row :gutter="16" class="mb-16">
       <el-col :span="14">
         <div class="stat-card">
-          <div class="detail-section-title">陈列区域占用</div>
+          <div class="detail-section-title">
+            <span style="cursor:pointer;" @click="router.push('/slot-board')">陈列区域占用（点击柱形查看该区域看板）</span>
+          </div>
           <div ref="areaChartRef" class="chart-container" style="height:320px;"></div>
         </div>
       </el-col>
@@ -55,6 +57,69 @@
         </div>
       </el-col>
     </el-row>
+
+    <div class="stat-card mb-16">
+      <div class="flex-between" style="margin-bottom:12px;">
+        <div class="detail-section-title" style="margin-bottom:0;">
+          <span style="cursor:pointer;" @click="router.push('/slot-board')">各区域占用率排行</span>
+        </div>
+        <el-button link type="primary" @click="router.push('/slot-board')">进入库位看板 →</el-button>
+      </div>
+      <el-table :data="areaRanking" size="small" stripe empty-text="暂无区域数据">
+        <el-table-column label="排名" width="70" align="center">
+          <template #default="{ $index }">
+            <el-tag v-if="$index < 3" :type="$index === 0 ? 'danger' : $index === 1 ? 'warning' : 'info'" size="small">TOP{{ $index + 1 }}</el-tag>
+            <span v-else style="color:#909399;">{{ $index + 1 }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="楼层" width="80">
+          <template #default="{ row }">{{ row.floor }}楼</template>
+        </el-table-column>
+        <el-table-column label="区域" min-width="160">
+          <template #default="{ row }">
+            <a style="color:#409eff; cursor:pointer;" @click="router.push(`/slot-board?areaId=${row.id}`)">{{ row.area_name }}</a>
+            <span style="color:#c0c4cc; font-size:12px; margin-left:6px;">{{ row.area_code }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="占用率" width="220">
+          <template #default="{ row }">
+            <el-progress :percentage="Math.round(row.occupancy_rate * 100)" :stroke-width="14" :color="occupancyColor(row.occupancy_rate)" style="width:100%;" />
+          </template>
+        </el-table-column>
+        <el-table-column label="容量/已占/空闲" width="160" align="center">
+          <template #default="{ row }">
+            <span style="color:#909399;">{{ row.capacity }}</span> /
+            <span style="color:#67c23a; font-weight:600;">{{ row.active_count }}</span> /
+            <span style="color:#409eff;">{{ row.free_count }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="待调换" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.swap_count > 0" type="warning" size="small">{{ row.swap_count }}</el-tag>
+            <span v-else style="color:#c0c4cc;">0</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="待回收" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.recovery_count > 0" type="danger" size="small">{{ row.recovery_count }}</el-tag>
+            <span v-else style="color:#c0c4cc;">0</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="异常库位" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.abnormal_count > 0" type="danger" size="small" effect="dark" style="cursor:pointer;" @click="router.push(`/slot-board?areaId=${row.id}&status=异常观察`)">
+              {{ row.abnormal_count }}
+            </el-tag>
+            <span v-else style="color:#c0c4cc;">0</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="router.push(`/slot-board?areaId=${row.id}`)">查看看板</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <el-row :gutter="16">
       <el-col :span="14">
@@ -209,7 +274,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight, Clock, Bell, CircleCheck } from '@element-plus/icons-vue'
@@ -224,6 +289,17 @@ const summaryCards = ref([])
 const anomalyCards = ref([])
 const activeTab = ref('expiry')
 
+const areaRanking = computed(() => {
+  return [...(stats.areaOccupancy || [])]
+    .sort((a, b) => (b.occupancy_rate || 0) - (a.occupancy_rate || 0))
+})
+
+function occupancyColor(rate) {
+  if (rate >= 0.9) return '#f56c6c'
+  if (rate >= 0.7) return '#e6a23c'
+  return '#67c23a'
+}
+
 const categoryChartRef = ref()
 const statusChartRef = ref()
 const areaChartRef = ref()
@@ -237,11 +313,12 @@ async function loadData() {
   summaryCards.value = [
     { label: '挂牌总数', value: stats.summary.totalTags || 0, color: '#409eff', icon: Tickets, click: null },
     { label: '样衣总数', value: stats.summary.totalGarments || 0, color: '#67c23a', icon: CollectionTag, click: null },
-    { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull, click: null },
+    { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull, click: () => router.push('/slot-board') },
     { label: '即将到期', value: stats.summary.expiringCount || 0, color: '#e6a23c', icon: Clock, click: null },
     { label: '已超期', value: stats.summary.overdueCount || 0, color: '#f56c6c', icon: Bell, click: null },
     { label: '待回收确认', value: stats.summary.pendingRecovery || 0, color: '#f56c6c', icon: RefreshRight, click: null },
-    { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning, click: null }
+    { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning, click: null },
+    { label: '异常库位', value: stats.summary.totalAbnormalSlots || 0, color: '#f56c6c', icon: Warning, click: () => router.push('/slot-board?status=异常观察') }
   ]
   anomalyCards.value = [
     { label: '异常处置单总数', value: stats.summary.totalAnomaly || 0, color: '#909399', icon: CircleCheck, click: () => router.push('/anomaly-tickets') },
@@ -294,13 +371,18 @@ function renderCharts() {
     c.setOption({
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       grid: { left: 50, right: 20, top: 20, bottom: 50 },
-      legend: { bottom: 0, data: ['已使用', '容量'] },
+      legend: { bottom: 0, data: ['已占用', '空闲'] },
       xAxis: { type: 'category', data: d.map(x => x.area_name), axisLabel: { rotate: 20, fontSize: 11 } },
       yAxis: { type: 'value' },
       series: [
-        { name: '已使用', type: 'bar', stack: 'total', data: d.map(x => x.used_count || 0), itemStyle: { color: '#409eff' }, barWidth: 24, label: { show: true, position: 'top', formatter: '{c}' } },
-        { name: '剩余容量', type: 'bar', stack: 'total', data: d.map(x => Math.max((x.capacity || 0) - (x.used_count || 0), 0)), itemStyle: { color: '#dcdfe6' } }
+        { name: '已占用', type: 'bar', stack: 'total', data: d.map(x => x.active_count || x.used_count || 0), itemStyle: { color: '#67c23a' }, barWidth: 24, label: { show: true, position: 'top', formatter: '{c}' } },
+        { name: '空闲', type: 'bar', stack: 'total', data: d.map(x => Math.max((x.capacity || 0) - (x.active_count || x.used_count || 0), 0)), itemStyle: { color: '#dcdfe6' } }
       ]
+    })
+    c.off('click')
+    c.on('click', (params) => {
+      const area = d[params.dataIndex]
+      if (area) router.push(`/slot-board?areaId=${area.id}`)
     })
     charts.push(c); window.addEventListener('resize', () => c.resize())
   }

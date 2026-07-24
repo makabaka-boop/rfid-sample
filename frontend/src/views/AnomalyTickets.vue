@@ -665,5 +665,12 @@ onMounted(async () => {
     needFollowUpFilter.value = 'today'
   }
   loadData()
+  if (route.query.id) {
+    try {
+      const res = await getAnomalyTicketApi(route.query.id)
+      detailData.value = res.data
+      detailDialogVisible.value = true
+    } catch (e) {}
+  }
 })
 </script>

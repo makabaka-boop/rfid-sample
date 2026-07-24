@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import axios from 'axios'
 
 export const loginApi = (username, password) => request.post('/auth/login', { username, password })
 export const getMeApi = () => request.get('/auth/me')
@@ -32,6 +33,27 @@ export const getHangingRecordsApi = (params) => request.get('/hanging-records', 
 export const getHangingRecordApi = (id) => request.get(`/hanging-records/${id}`)
 
 export const getSlotBoardApi = (params) => request.get('/slot-board', { params })
+export const getSlotBoardFreeSlotsApi = (params) => request.get('/slot-board/free-slots', { params })
+export const exportSlotBoardApi = async (params) => {
+  const token = localStorage.getItem('token')
+  const query = new URLSearchParams()
+  Object.entries(params || {}).forEach(([k, v]) => { if (v !== '' && v !== null && v !== undefined) query.append(k, v) })
+  const res = await axios.get(`/api/slot-board/export?${query.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    responseType: 'blob'
+  })
+  const disposition = res.headers['content-disposition'] || ''
+  const match = disposition.match(/filename="?([^"]+)"?/)
+  const filename = match ? match[1] : `slot-board-${Date.now()}.csv`
+  const url = window.URL.createObjectURL(new Blob([res.data]))
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', filename)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
 
 export const createSwapApi = (data) => request.post('/swap', data)
 export const getSwapRecordsApi = (params) => request.get('/swap-records', { params })
